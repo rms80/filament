@@ -733,6 +733,16 @@ bool FilamentApp::isFroxelGridEnabled() const noexcept {
     return !!mFroxelGridEnabled;
 }
 
+
+namespace local {
+    static bool global_enable_camera_controls = true;
+}
+
+void FilamentApp::SetCameraControlsEnabled(bool bEnabled) {
+    local::global_enable_camera_controls = bEnabled;
+}
+
+
 // ------------------------------------------------------------------------------------------------
 
 FilamentApp::Window::Window(FilamentApp* filamentApp,
@@ -861,15 +871,20 @@ FilamentApp::Window::Window(FilamentApp* filamentApp,
     }
     mViews.emplace_back(mUiView = new CView(*mRenderer, "UI View"));
 
+    auto useCameraMode = config.cameraMode;
+    useCameraMode = filament::camutils::Mode::ORBIT;
+
     // set-up the camera manipulators
     mMainCameraMan = CameraManipulator::Builder()
             .targetPosition(0, 0, -4)
-            .flightMoveDamping(15.0)
-            .build(config.cameraMode);
+            .flightMaxMoveSpeed(10)
+            .flightSpeedSteps(10)
+            .flightMoveDamping(15.0).build(
+                    useCameraMode);
     mDebugCameraMan = CameraManipulator::Builder()
             .targetPosition(0, 0, -4)
-            .flightMoveDamping(15.0)
-            .build(config.cameraMode);
+            .flightMoveDamping(15.0).build(
+                    useCameraMode);
 
     mMainView->setCamera(mMainCamera);
     mMainView->setCameraManipulator(mMainCameraMan);
@@ -1103,25 +1118,25 @@ void FilamentApp::CView::setViewport(filament::Viewport const& viewport) {
 }
 
 void FilamentApp::CView::mouseDown(int button, ssize_t x, ssize_t y) {
-    if (mCameraManipulator) {
+    if (mCameraManipulator && local::global_enable_camera_controls) {
         mCameraManipulator->grabBegin(x, y, button == 3);
     }
 }
 
 void FilamentApp::CView::mouseUp(ssize_t x, ssize_t y) {
-    if (mCameraManipulator) {
+    if (mCameraManipulator && local::global_enable_camera_controls) {
         mCameraManipulator->grabEnd();
     }
 }
 
 void FilamentApp::CView::mouseMoved(ssize_t x, ssize_t y) {
-    if (mCameraManipulator) {
+    if (mCameraManipulator && local::global_enable_camera_controls) {
         mCameraManipulator->grabUpdate(x, y);
     }
 }
 
 void FilamentApp::CView::mouseWheel(ssize_t x) {
-    if (mCameraManipulator) {
+    if (mCameraManipulator && local::global_enable_camera_controls) {
         mCameraManipulator->scroll(0, 0, x);
     }
 }
@@ -1188,3 +1203,5 @@ void FilamentApp::CView::setCamera(Camera* camera) {
 void FilamentApp::GodView::setGodCamera(Camera* camera) {
     getView()->setDebugCamera(camera);
 }
+
+

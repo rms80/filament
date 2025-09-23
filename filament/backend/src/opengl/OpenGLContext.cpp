@@ -367,6 +367,9 @@ void OpenGLContext::setDefaultState() noexcept {
         glEnable(GL_CLIP_DISTANCE0);
         glEnable(GL_CLIP_DISTANCE1);
     }
+
+    
+    glLineWidth(6.0f);
 }
 
 

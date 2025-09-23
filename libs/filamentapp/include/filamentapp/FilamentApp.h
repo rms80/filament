@@ -76,6 +76,8 @@ public:
     using DropCallback = std::function<void(std::string_view)>;
 
     static FilamentApp& get();
+    
+    void SetCameraControlsEnabled(bool bEnabled);
 
     ~FilamentApp();
 
