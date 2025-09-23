@@ -25,6 +25,10 @@
 #include <filament/TextureSampler.h>
 #include <filament/TransformManager.h>
 #include <filament/View.h>
+#include <filament/VertexBuffer.h>
+#include <filament/IndexBuffer.h>
+#include <filament/Camera.h>
+#include <filament/Frustum.h>
 
 #include <utils/EntityManager.h>
 #include <utils/Log.h>
@@ -42,15 +46,22 @@
 #include <utils/Path.h>
 
 #include <stb_image.h>
+#include <imgui.h>
 
 #include <iostream>
 
 #include "generated/resources/resources.h"
 #include "generated/resources/monkey.h"
 
+// gizmo system
+#include "gizmo_math.h"
+#include "gizmo.h"
+
+
 using namespace filament;
 using namespace ktxreader;
 using namespace filament::math;
+using namespace gizmo;
 
 struct App {
     Material* material;
@@ -62,6 +73,7 @@ struct App {
     Texture* roughness;
     Texture* metallic;
     Texture* ao;
+   
 };
 
 static const char* IBL_FOLDER = "assets/ibl/lightroom_14b";
@@ -130,6 +142,234 @@ static Texture* loadNormalMap(Engine* engine, const uint8_t* normals, size_t nby
     return normalMap;
 }
 
+
+
+
+static filament::math::double2 ViewportSize;
+static filament::math::double2 MousePosition;
+
+
+
+
+void begin_capture(TRSGizmo& gizmo, const ray3& hit_ray, double ray_parameter, EGizmoElement hit_element)
+{
+    gizmo.capture_element = hit_element;
+
+    mat4 transform = gizmo.get_frame_transform();
+    double4 world_origin = transform * double4(0, 0, 0, 1);
+    double4 axis(
+        (hit_element == EGizmoElement::TranslateX)?gizmo.view_scale:0.0, 
+        (hit_element == EGizmoElement::TranslateY)?gizmo.view_scale:0.0,
+        (hit_element == EGizmoElement::TranslateZ)?gizmo.view_scale:0.0, 0.0 );
+    double4 world_axis = normalize(transform * axis);
+    gizmo.world_line = line3(world_origin.xyz, world_axis.xyz);
+    gizmo.start_param = gizmo.world_line.project( hit_ray.point_at(ray_parameter) );
+    gizmo.start_transform = transform;
+    gizmo.start_origin = gizmo.origin;
+    gizmo.start_orientation = gizmo.orientation;
+}
+
+void update_capture(TRSGizmo& gizmo, Engine* engine, const ray3& update_ray)
+{ 
+    double ray_param_t, line_param_t;
+    double distsqr = ray_line_distance_sqr(update_ray, gizmo.world_line, ray_param_t, line_param_t);
+
+    double dp = line_param_t - gizmo.start_param;
+    double3 translation = dp * gizmo.world_line.direction;
+
+    gizmo.origin = gizmo.start_origin + translation;
+}
+
+void end_capture(TRSGizmo& gizmo)
+{ 
+    gizmo.capture_element = EGizmoElement::None;
+}
+
+
+enum EGizmoCaptureState
+{
+    NotCapturing,
+    CapturePending,
+    Capturing,
+    EndCapturePending
+};
+EGizmoCaptureState gizmo_capture_state = EGizmoCaptureState::NotCapturing;
+
+static EGizmoElement last_gizmo_hit_element = EGizmoElement::None;
+static double2 gizmo_capture_start_pos;
+static double2 gizmo_last_pos;
+
+void tick_gizmo(TRSGizmo& gizmo, App& app, Engine* engine, View* view, double now) 
+{
+    const filament::Camera& camera = view->getCamera();
+    double3 camPos = camera.getPosition();
+    double3 camLeft = camera.getLeftVector();
+    double3 camForward = camera.getForwardVector();
+    double3 camUp = camera.getUpVector();
+    // seems like filament app always uses vertical fov for scaling
+    double camHFOV = camera.getFieldOfViewInDegrees(Camera::Fov::HORIZONTAL);
+    double camVFOV = camera.getFieldOfViewInDegrees(Camera::Fov::VERTICAL);
+
+    double target_view_angle = camVFOV * 0.1; // gizmo target visual angle is a fraction of fov
+                                              // (should fold in viewport size...)
+    double3 origin_to_eye = normalize(gizmo.origin - camPos);
+    double3 left_to_eye = normalize((gizmo.origin + camLeft) - camPos);
+    double angle = std::acos(dot(origin_to_eye, left_to_eye)) * math::d::RAD_TO_DEG;
+    // perhaps should average left/right up/down angles to stabilize
+    // also this is nonlinear so it won't stay completely same size...
+    double scale_t = target_view_angle / angle;
+
+    // update gizmo transform w/ new view scale
+    auto& tcm = engine->getTransformManager();
+    TransformManager::Instance gizmoTransformHandle = tcm.getInstance(gizmo.renderable);
+    gizmo.view_scale = scale_t;
+
+
+    // construct eye ray
+    // this isn't quite right...works at middle and edge of screen but not in between (??)
+    // (is it due to nonlinearity of tangent??)
+    //double ty = ( (1.0 - MousePosition.y / ViewportSize.y) - 0.5);  // mousecoords are y-down
+    //double vert_angle = ty * camVFOV;
+    //double h = std::tan(vert_angle * math::d::DEG_TO_RAD);
+    //double tx = (MousePosition.x / ViewportSize.x - 0.5);   // value in range [-0.5, 0.5] because half of fov is on each side
+    //double horz_angle = tx * camHFOV;
+    //double w = std::tan(horz_angle * math::d::DEG_TO_RAD);
+    //double3 view_pos = camPos + (1.0 * camForward) + (h * camUp) + (w * camLeft);
+
+    //double3 ray_dir = normalize(view_pos - camPos);
+    //double3 ray_origin = camPos;
+    //ray3 hit_ray( ray_origin, ray_dir );
+
+
+    double3 centerPos = camPos + (1.0 * camForward);
+    // left/right are backwards??
+    double3 rightPos = centerPos + std::tan(camHFOV * 0.5 * math::d::DEG_TO_RAD) * camLeft;
+    double3 leftPos = centerPos - std::tan(camHFOV * 0.5 * math::d::DEG_TO_RAD) * camLeft;
+    double3 dlr = segment3(leftPos, rightPos).point_interp(MousePosition.x / ViewportSize.x);
+    double3 deltax = dlr - centerPos;
+    double3 upPos = centerPos + std::tan(camVFOV * 0.5 * math::d::DEG_TO_RAD) * camUp;
+    double3 downPos = centerPos - std::tan(camVFOV * 0.5 * math::d::DEG_TO_RAD) * camUp;
+    double3 dud = segment3(downPos, upPos).point_interp((1.0 - MousePosition.y / ViewportSize.y));
+    double3 deltay = dud - centerPos;
+    double3 combinedPos = centerPos + deltax + deltay;
+    double3 ray2_dir = normalize(combinedPos - camPos);
+    double3 ray2_origin = camPos;
+    ray3 hit_ray = ray3(ray2_origin, ray2_dir);
+
+
+    // ray intersection
+    //plane3 zplane(double3(0, 0, 1), double3(0, 0, -4));
+    //double3 plane_hit_pos = ray_plane_intersection(hit_ray, zplane);
+    //gizmo.origin = plane_hit_pos;
+
+
+    if (gizmo_capture_state == EGizmoCaptureState::Capturing)
+    {
+        if (gizmo.capture_element != EGizmoElement::None)
+            update_capture(gizmo, engine, hit_ray);
+    } 
+    else if (gizmo_capture_state == EGizmoCaptureState::EndCapturePending)
+    {
+        end_capture(gizmo);
+        gizmo_capture_state = EGizmoCaptureState::NotCapturing;
+    } 
+    else 
+    {
+        double ray_param_t = 0;
+        EGizmoElement hitElement = gizmo_hit_test(gizmo, hit_ray, ray_param_t);
+        if (gizmo_capture_state == EGizmoCaptureState::CapturePending) 
+        {
+            begin_capture(gizmo, hit_ray, ray_param_t, hitElement);
+            gizmo_capture_state = EGizmoCaptureState::Capturing;
+        } 
+        else {
+            last_gizmo_hit_element = hitElement;
+        }
+    }
+
+    gizmo_last_pos = MousePosition;
+
+    //if (last_gizmo_hit_element != EGizmoElement::None)
+    //    gizmo.view_scale *= 2;
+
+    mat4 new_view_transform = gizmo.get_view_transform();
+    tcm.setTransform(gizmoTransformHandle, new_view_transform);
+    mat4 new_target_transform = gizmo.get_frame_transform();
+    TransformManager::Instance meshTransformHandle = tcm.getInstance(app.mesh.renderable);
+    tcm.setTransform(meshTransformHandle, new_target_transform);
+}
+
+
+static bool left_mouse_down_state = false;
+
+void imgui_callback(filament::Engine* engine, filament::View* view)
+{
+    ImVec2 WindowSize = ImGui::GetMainViewport()->Size;
+    ViewportSize = double2(WindowSize.x, WindowSize.y);
+    ImVec2 MousePos = ImGui::GetMousePos();
+    if (MousePos.x >= 0 && MousePos.x <= WindowSize.x)
+        MousePosition = double2(MousePos.x, MousePos.y);
+
+    bool left_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if (left_down == true && left_mouse_down_state == false)        // pressed
+    {
+        if (gizmo_capture_state == EGizmoCaptureState::NotCapturing
+            && last_gizmo_hit_element != EGizmoElement::None )
+        {
+            FilamentApp::get().SetCameraControlsEnabled(false);
+            gizmo_capture_state = EGizmoCaptureState::CapturePending;
+            gizmo_capture_start_pos = MousePosition;
+        }
+
+        left_mouse_down_state = true;
+    }
+    else if (left_down == false && left_mouse_down_state == true)   // released
+    {
+        if (gizmo_capture_state == EGizmoCaptureState::Capturing)
+        {
+            gizmo_capture_state = EGizmoCaptureState::EndCapturePending;
+            FilamentApp::get().SetCameraControlsEnabled(true);
+        } 
+        else
+            gizmo_capture_state == EGizmoCaptureState::NotCapturing;
+
+        left_mouse_down_state = false;
+    }
+
+
+
+
+    ImGui::SetNextWindowSize(ImVec2(0, 0)); 
+    ImGui::Begin("Controls");
+    ImGui::Button("something!");
+    ImGui::NewLine();
+    ImGui::Text("window size %.2f %.2f", WindowSize.x, WindowSize.y);
+    ImGui::NewLine();
+    ImGui::Text("mouse pos %.2f %.2f", MousePos.x-WindowSize.x/2, MousePos.y-WindowSize.y/2);
+
+    //ImGui::SliderInt("Emitters", &app.ui.emitterCount, EMITTER_COUNT_MIN, EMITTER_COUNT_MAX);
+    //ImGui::Checkbox("Freeze Particles", &app.ui.particlesFrozen);
+    //ImGui::BeginDisabled(app.ui.particlesFrozen);
+    //ImGui::Checkbox("Freeze Emitters", &app.ui.freezeEmitters);
+    //ImGui::EndDisabled();
+    //ImGui::SliderFloat("Gravity", &app.ui.gravityStrength, 0.0f, GRAVITY_STRENGTH_MAX, "%.2f G");
+    //ImGui::Checkbox("Enable Lights", &app.ui.lightsEnabled);
+    //ImGui::Checkbox("Moonlight", &app.ui.moonlightEnabled);
+
+    //bool fireworks = (app.ui.emitterMode == App::EmitterMode::FIREWORKS);
+    //if (ImGui::Checkbox("Fireworks Mode", &fireworks)) {
+    //    app.ui.emitterMode = fireworks ? App::EmitterMode::FIREWORKS : App::EmitterMode::CONTINUOUS;
+    //}
+
+    //if (app.ui.emitterMode == App::EmitterMode::FIREWORKS) {
+    //    ImGui::SliderFloat("Delay", &app.ui.fireworksDelay, FIREWORKS_DELAY_MIN,
+    //            FIREWORKS_DELAY_MAX);
+    //}
+    ImGui::End();
+}
+
+
+
 int main(int argc, char** argv) {
     Config config;
     config.title = "suzanne";
@@ -138,7 +378,9 @@ int main(int argc, char** argv) {
     handleCommandLineArguments(argc, argv, &config);
 
     App app;
-    auto setup = [config, &app](Engine* engine, View* view, Scene* scene) {
+    TRSGizmo gizmo;
+    
+    auto setup = [config, &app, &gizmo](Engine* engine, View* view, Scene* scene) {
         auto& tcm = engine->getTransformManager();
         auto& rcm = engine->getRenderableManager();
         auto& em = utils::EntityManager::get();
@@ -189,14 +431,41 @@ int main(int argc, char** argv) {
         // Add geometry into the scene.
         app.mesh = filamesh::MeshReader::loadMeshFromBuffer(engine, MONKEY_SUZANNE_DATA, nullptr,
                 nullptr, app.materialInstance);
-        auto ti = tcm.getInstance(app.mesh.renderable);
-        app.transform = mat4f{ mat3f(1), float3(0, 0, -4) } * tcm.getWorldTransform(ti);
-        rcm.setCastShadows(rcm.getInstance(app.mesh.renderable), false);
+        TransformManager::Instance ti = tcm.getInstance(app.mesh.renderable);
+        mat4f initial_transform = tcm.getWorldTransform(ti);
+        app.transform = mat4f{ mat3f(1), float3(0, 0, -4) } * initial_transform;
+        rcm.setCastShadows(rcm.getInstance(app.mesh.renderable), true);
         scene->addEntity(app.mesh.renderable);
         tcm.setTransform(ti, app.transform);
+
+        // create gizmo
+
+        gizmo = create_gizmo(*engine);
+        TransformManager::Instance gizmoTransformHandle = tcm.getInstance(gizmo.renderable);
+        gizmo.view_scale = 3;
+        gizmo.origin = float3(0, 0, -4);
+        scene->addEntity(gizmo.renderable);
+        tcm.setTransform(gizmoTransformHandle, gizmo.get_view_transform());
+
+
+        // unlit material with constant color...
+        //filament::Material* lineMaterial = Material::Builder()
+        //                .package(RESOURCES_SANDBOXUNLIT_DATA, RESOURCES_SANDBOXUNLIT_SIZE)
+        //                .build(*engine);
+        //filament::MaterialInstance* lineMaterialInstance = lineMaterial->createInstance();
+        //const filament::LinearColor color{ 1.0f, 0.0f, 0.0f };
+        //lineMaterialInstance->setParameter("baseColor", RgbType::LINEAR, color);
+        //lineMaterialInstance->setParameter("emissive", RgbType::LINEAR,
+        //        color * 10.0f);
+        //lineMaterialInstance->setCullingMode(MaterialInstance::CullingMode::NONE);
+
+
+
+
+
     };
 
-    auto cleanup = [&app](Engine* engine, View*, Scene*) {
+    auto cleanup = [&app, &gizmo](Engine* engine, View*, Scene*) {
         engine->destroy(app.mesh.renderable);
         engine->destroy(app.materialInstance);
         engine->destroy(app.material);
@@ -205,9 +474,11 @@ int main(int argc, char** argv) {
         engine->destroy(app.roughness);
         engine->destroy(app.metallic);
         engine->destroy(app.ao);
+        destroy_gizmo(gizmo, *engine);
     };
 
-    FilamentApp::get().run(config, setup, cleanup);
+    FilamentApp::get().animate([&gizmo, &app](Engine* e, View* v, double now) { tick_gizmo(gizmo, app, e, v, now); });
+    FilamentApp::get().run(config, setup, cleanup, imgui_callback);
 
     return 0;
 }
