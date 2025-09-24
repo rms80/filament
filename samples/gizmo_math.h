@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include <math/vec3.h>
+#include <filament/Box.h>
 
 namespace gizmo {
 
@@ -12,17 +13,22 @@ using namespace filament;
 using namespace filament::math;
 
 
+//
+// Necessary math types and functions for implementing well-behaved gizmos
+// Currently depends on filament double2, double3 and quat, and related operations
+//
+
 
 struct line3
 {
     double3 origin;
     double3 direction;
 
-    line3() { 
+    inline line3() { 
         origin = double3(0, 0, 0);
         direction = double3(0, 0, 1);
     }
-    line3(const double3& originIn, const double3& directionIn) {
+    inline line3(const double3& originIn, const double3& directionIn) {
         origin = originIn;
         direction = directionIn;
     }
@@ -51,11 +57,11 @@ struct ray3
     double3 origin;
     double3 direction;
 
-    ray3() { 
+    inline ray3() { 
         origin = double3(0, 0, 0);
         direction = double3(0, 0, 1);
     }
-    ray3(const double3& originIn, const double3& directionIn) {
+    inline ray3(const double3& originIn, const double3& directionIn) {
         origin = originIn;
         direction = directionIn;
     }
@@ -83,12 +89,12 @@ struct segment3 {
     double3 direction;
     double extent;
 
-    segment3() { 
+    inline segment3() { 
         origin = double3(0, 0, 0);
         direction = double3(1, 0, 0);
         extent = 1.0;
     }
-    segment3(const double3& startPt, const double3& endPt)
+    inline segment3(const double3& startPt, const double3& endPt)
     {
         origin = (endPt + startPt) * 0.5;
         direction = endPt - startPt;
@@ -123,21 +129,76 @@ struct plane3
     double3 normal;
     double d;
 
-    plane3(double3 normalIn, double3 point)
+    inline plane3(double3 normalIn, double3 point)
     { 
-        normal = normalIn;
+        normal = normalize(normalIn);
         d = -dot(point, normal);
     }
 };
 
 
+struct frame3
+{
+    double3 origin;
+    quat orientation;
 
+    inline frame3(double3 originIn, quat orientationIn)
+    { 
+        origin = originIn;
+        orientation = orientationIn;
+    }
+
+    inline double3 AxisX() const { return orientation * double3(1, 0, 0); }
+    inline double3 AxisY() const { return orientation * double3(0, 1, 0); }
+    inline double3 AxisZ() const { return orientation * double3(0, 0, 1); }
+    inline double3 Axis(int index) const {
+        double3 n(0, 0, 0);
+        n[index] = 1;
+        return orientation * n;
+    }
+
+    inline double3 project(double3 point, int axis) const { 
+        double3 n = Axis(axis);
+        double t = dot((point - origin), n);
+        return point - t * n;
+    }
+
+    inline double2 project2(double3 point, int axis) const { 
+        double3 l = project(point, axis) - origin;
+        if (axis == 0) {
+            return double2( dot(l, Axis(1)), dot(l, Axis(2)) );
+        } else if (axis == 1) {
+            return double2(dot(l, Axis(0)), dot(l, Axis(2)));
+        } else {
+            return double2(dot(l, Axis(0)), dot(l, Axis(1)));
+        }
+    }
+
+    inline double3 planeIntersection(ray3 ray, int axis) const;
+};
 
 
 
 inline double vector_angle_deg(const double3& dir0, const double3& dir1) {
     double d = std::clamp(dot(dir0, dir1), -1.0, 1.0);
     return std::acos(d) * math::d::RAD_TO_DEG;
+}
+
+
+// Returns two vectors perpendicular to n, as efficiently as possible.
+// Duff et al method, from https://graphics.pixar.com/library/OrthonormalB/paper.pdf
+inline void make_perp_vectors(double3 n, double3& b1, double3& b2) {
+    if (n.z < 0.0) {
+        double a = 1.0 / (1.0 - n.z);
+        double b = n.x * n.y * a;
+        b1 = double3(1.0 - n.x * n.x * a, -b, n.x);
+        b2 = double3(b, n.y * n.y * a - 1.0, -n.y);
+    } else {
+        double a = 1.0 / (1.0 + n.z);
+        double b = -n.x * n.y * a;
+        b1 = double3(1.0 - n.x * n.x * a, b, -n.x);
+        b2 = double3(b, 1.0 - n.y * n.y * a, -n.y);
+    }
 }
 
 
@@ -149,7 +210,10 @@ inline double3 ray_plane_intersection(const ray3& ray, const plane3& plane) {
     return ray.point_at(ray_t);
 }
 
-
+double3 frame3::planeIntersection(ray3 ray, int axis) const {
+    plane3 plane(Axis(axis), origin);
+    return ray_plane_intersection(ray, plane);
+}
 
 
 // based on WildMagic5 via geometry3Sharp
@@ -307,6 +371,16 @@ inline double ray_line_distance_sqr(const ray3& ray, const line3& line,
         sqrDist = (double)0;
     }
     return sqrDist;
+}
+
+
+
+inline double ray_circle_angleRad(const ray3& ray, const frame3& circleFrame) 
+{
+    double3 plane_pos = circleFrame.planeIntersection(ray, 2);
+    double2 plane_uv = circleFrame.project2(plane_pos, 2);
+    double angleRad = std::atan2(plane_uv.y, plane_uv.x);
+    return angleRad;
 }
 
 
