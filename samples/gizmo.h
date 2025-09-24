@@ -135,27 +135,6 @@ public:
 
 
 
-struct GizmoRenderVertex {
-    filament::math::float3 position;
-    uint32_t color;
-};
-
-
-struct GizmoRenderState
-{
-    std::vector<GizmoRenderVertex> vertex_data;
-    filament::VertexBuffer* vertex_buffer = nullptr;
-    std::vector<uint32_t> index_data;
-    filament::IndexBuffer* index_buffer = nullptr;
-
-    filament::Box bounds;
-
-    filament::Material* material = nullptr;
-    utils::Entity renderable;
-};
-
-
-
 
 //////////////////////
 // Gizmo Construction
@@ -189,6 +168,28 @@ inline BaseGizmo create_standard_TRS_gizmo()
 //////////////////////
 // Rendering
 //////////////////////
+
+
+
+struct GizmoRenderVertex {
+    filament::math::float3 position;
+    uint32_t color;
+};
+
+
+struct GizmoRenderState {
+    std::vector<GizmoRenderVertex> vertex_data;
+    filament::VertexBuffer* vertex_buffer = nullptr;
+    std::vector<uint32_t> index_data;
+    filament::IndexBuffer* index_buffer = nullptr;
+
+    filament::Box bounds;
+
+    filament::Material* material = nullptr;
+    utils::Entity renderable;
+};
+
+
 
 
 inline void build_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderState,
