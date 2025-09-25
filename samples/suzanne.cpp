@@ -163,73 +163,31 @@ void begin_capture(GizmoSystem& gizmoSystem, const ray3& hit_ray, double ray_par
     BaseGizmo& gizmo = gizmoSystem.gizmo;
     GizmoCaptureState& captureState = gizmoSystem.activeCapture;
 
-    captureState.capture_element = hit_element;
-
-    mat4 transform = gizmo.get_frame_transform();
-    double4 world_origin = transform * double4(0, 0, 0, 1);
-
-    if (captureState.capture_element >= EGizmoElement::TranslateX &&
-            captureState.capture_element <= EGizmoElement::TranslateZ) 
-    {
-        double4 axis((hit_element == (int) EGizmoElement::TranslateX) ? gizmo.view_scale : 0.0,
-                (hit_element == (int) EGizmoElement::TranslateY) ? gizmo.view_scale : 0.0,
-                (hit_element == (int) EGizmoElement::TranslateZ) ? gizmo.view_scale : 0.0, 0.0);
-        double4 world_axis = normalize(transform * axis);
-        captureState.world_line = line3(world_origin.xyz, world_axis.xyz);
-        captureState.start_param = captureState.world_line.project(hit_ray.point_at(ray_parameter));
+    captureState.initialize(&gizmo, gizmo.findElement(hit_element));
+    if (captureState.is_valid() == false) {
+        captureState.reset();
+    } else {
+        gizmo::begin_element_capture(hit_ray, ray_parameter, captureState);
     }
-    else if (captureState.capture_element >= EGizmoElement::RotateAroundX &&
-               captureState.capture_element <= EGizmoElement::RotateAroundZ)
-    {
-        // gross
-        double4 axis((hit_element == (int) EGizmoElement::RotateAroundX) ? 1 : 0.0,
-                (hit_element == (int) EGizmoElement::RotateAroundY) ? 1 : 0.0,
-                (hit_element == (int) EGizmoElement::RotateAroundZ) ? 1 : 0.0, 0.0);
-        double4 world_axis = normalize(transform * axis);
-        
-        frame3 worldFrame(world_origin.xyz, quat::fromDirectedRotation(double3(0, 0, 1), world_axis.xyz));
-        captureState.world_line = line3(world_origin.xyz, world_axis.xyz);
-        captureState.start_param = ray_circle_angleRad(hit_ray, worldFrame);
-    }
-
-    captureState.start_transform = transform;
-    captureState.start_origin = gizmo.origin;
-    captureState.start_orientation = gizmo.orientation;
 }
 
 // called every frame while gizmo is capturing
 void update_capture(GizmoSystem& gizmoSystem, Engine* engine, const ray3& update_ray) 
 { 
-    BaseGizmo& gizmo = gizmoSystem.gizmo;
     GizmoCaptureState& captureState = gizmoSystem.activeCapture;
-
-    if (captureState.capture_element >= EGizmoElement::TranslateX &&
-            captureState.capture_element <= EGizmoElement::TranslateZ) {
-        double ray_param_t, line_param_t;
-        double distsqr =
-                ray_line_distance_sqr(update_ray, captureState.world_line, ray_param_t, line_param_t);
-
-        double dp = line_param_t - captureState.start_param;
-        double3 translation = dp * captureState.world_line.direction;
-
-        gizmo.origin = captureState.start_origin + translation;
-    } 
-    else if (captureState.capture_element >= EGizmoElement::RotateAroundX &&
-               captureState.capture_element <= EGizmoElement::RotateAroundZ) 
-    {
-        frame3 worldFrame(captureState.world_line.origin, 
-                quat::fromDirectedRotation(double3(0, 0, 1), captureState.world_line.direction));
-        double newAngleRad = ray_circle_angleRad(update_ray, worldFrame);
-
-        double dt = newAngleRad - captureState.start_param;
-        quat rotation = quat::fromAxisAngle(captureState.world_line.direction, dt);
-        gizmo.orientation = rotation * captureState.start_orientation;
+    if (captureState.is_valid()) {
+        gizmo::update_element_capture(update_ray, captureState);
     }
 }
 
 // called when gizmo capture terminates on mouseup 
-void end_capture(GizmoSystem& gizmoSystem) { 
-    gizmoSystem.activeCapture.capture_element = EGizmoElement::None;
+void end_capture(GizmoSystem& gizmoSystem) 
+{ 
+    GizmoCaptureState& captureState = gizmoSystem.activeCapture;
+    if (captureState.is_valid()) {
+        gizmo::end_element_capture(captureState);
+    }
+    captureState.reset();
 }
 
 // gizmo capture state machine state
@@ -243,66 +201,32 @@ enum EGizmoCaptureState
 EGizmoCaptureState gizmo_capture_state = EGizmoCaptureState::NotCapturing;
 
 static int last_gizmo_hit_element = EGizmoElement::None;
-static double2 gizmo_capture_start_pos;     // unused
-static double2 gizmo_last_pos;              // unused
+
+
 
 
 // per-frame gizmo processing  (largely should be factored into gizmo.h or utilities)
 void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, double now) 
 {
+    TransformManager& tcm = engine->getTransformManager();
     BaseGizmo& gizmo = gizmoSystem.gizmo;
     const GizmoCaptureState& captureStaste = gizmoSystem.activeCapture;
 
     // extra filament camera info
-    const filament::Camera& camera = view->getCamera();
-    double3 camPos = camera.getPosition();
-    double3 camLeft = camera.getLeftVector();
-    double3 camForward = camera.getForwardVector();
-    double3 camUp = camera.getUpVector();
-    // seems like filament app always uses vertical fov for scaling
-    double camHFOV = camera.getFieldOfViewInDegrees(Camera::Fov::HORIZONTAL);
-    double camVFOV = camera.getFieldOfViewInDegrees(Camera::Fov::VERTICAL);
+    GizmoCameraInfo camInfo = extract_camera_info(view);
 
-    // figure out worldspace scaling that keeps gizmo a consistent size regardless of camera position
-
-    // gizmo target visual angle is a fraction of fov
-    // (todo consider viewport size)
-    double target_view_angle = camVFOV * GizmoConstants::GizmoVisualAngleFOVFraction; 
-    double3 origin_to_eye = normalize(gizmo.origin - camPos);
-    double3 left_to_eye = normalize((gizmo.origin + camLeft) - camPos);
-    double angle = std::acos(dot(origin_to_eye, left_to_eye)) * math::d::RAD_TO_DEG;
-    // perhaps should average left/right up/down angles to stabilize
-    // also this is nonlinear so it won't stay completely same size...
-    double scale_t = target_view_angle / angle;
-
-    // update gizmo transform w/ new view scale
-    auto& tcm = engine->getTransformManager();
-    TransformManager::Instance gizmoTransformHandle = tcm.getInstance(gizmoSystem.renderState.renderable);
+    // calculate view scale so that gizmo stays the same visual size
+    double scale_t = calc_view_scaling_factor(gizmo.origin, camInfo);
     gizmo.view_scale = scale_t;
 
-    // this mess is to construct an eye ray for hit-testing at the cursor position, w/ filament camera.
-    // can be simplified significantly    
-    double3 centerPos = camPos + (1.0 * camForward);
-    // left/right are backwards??
-    double3 rightPos = centerPos + std::tan(camHFOV * 0.5 * math::d::DEG_TO_RAD) * camLeft;
-    double3 leftPos = centerPos - std::tan(camHFOV * 0.5 * math::d::DEG_TO_RAD) * camLeft;
-    double3 dlr = segment3(leftPos, rightPos).point_interp(MousePosition.x / ViewportSize.x);
-    double3 deltax = dlr - centerPos;
-    double3 upPos = centerPos + std::tan(camVFOV * 0.5 * math::d::DEG_TO_RAD) * camUp;
-    double3 downPos = centerPos - std::tan(camVFOV * 0.5 * math::d::DEG_TO_RAD) * camUp;
-    double3 dud = segment3(downPos, upPos).point_interp((1.0 - MousePosition.y / ViewportSize.y));
-    double3 deltay = dud - centerPos;
-    double3 combinedPos = centerPos + deltax + deltay;
-    double3 ray2_dir = normalize(combinedPos - camPos);
-    double3 ray2_origin = camPos;
-    ray3 hit_ray = ray3(ray2_origin, ray2_dir);
-
+    // 3D ray at current mouse cursor position
+    ray3 cursor_ray = construct_eye_ray(MousePosition, camInfo);
 
     // gizmo-capture state machine
     if (gizmo_capture_state == EGizmoCaptureState::Capturing)
     {
-        if (captureStaste.capture_element != EGizmoElement::None)
-            update_capture(gizmoSystem, engine, hit_ray);
+        if (captureStaste.is_valid())
+            update_capture(gizmoSystem, engine, cursor_ray);
     } 
     else if (gizmo_capture_state == EGizmoCaptureState::EndCapturePending)
     {
@@ -311,11 +235,11 @@ void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, 
     } 
     else 
     {
-        GizmoHitResult hitResult = gizmo_hit_test(gizmo, hit_ray);
+        GizmoHitResult hitResult = gizmo_hit_test(gizmo, cursor_ray);
         if (gizmo_capture_state == EGizmoCaptureState::CapturePending) 
         {
             if (hitResult.hit_identifier > 0) {
-                begin_capture(gizmoSystem, hit_ray, hitResult.hit_ray_param, hitResult.hit_identifier);
+                begin_capture(gizmoSystem, cursor_ray, hitResult.hit_ray_param, hitResult.hit_identifier);
                 gizmo_capture_state = EGizmoCaptureState::Capturing;
             } else {
                 gizmo_capture_state = EGizmoCaptureState::NotCapturing;
@@ -327,10 +251,10 @@ void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, 
         }
     }
 
-    gizmo_last_pos = MousePosition;
-
     // update the gizmo and bound mesh every frame (only actually needed if capturing)
     mat4 new_view_transform = gizmo.get_view_transform();
+    TransformManager::Instance gizmoTransformHandle =
+            tcm.getInstance(gizmoSystem.renderState.renderable);
     tcm.setTransform(gizmoTransformHandle, new_view_transform);
     mat4 new_target_transform = gizmo.get_frame_transform();
     TransformManager::Instance meshTransformHandle = tcm.getInstance(app.mesh.renderable);
@@ -358,7 +282,6 @@ void imgui_callback(filament::Engine* engine, filament::View* view)
         {
             FilamentApp::get().SetCameraControlsEnabled(false);
             gizmo_capture_state = EGizmoCaptureState::CapturePending;
-            gizmo_capture_start_pos = MousePosition;
         }
 
         left_mouse_down_state = true;

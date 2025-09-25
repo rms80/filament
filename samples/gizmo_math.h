@@ -147,6 +147,10 @@ struct frame3
         origin = originIn;
         orientation = orientationIn;
     }
+    inline frame3(double3 originIn, double3 axisZ) {
+        origin = originIn;
+        orientation = quat::fromDirectedRotation(double3(0, 0, 1), axisZ);
+    }
 
     inline double3 AxisX() const { return orientation * double3(1, 0, 0); }
     inline double3 AxisY() const { return orientation * double3(0, 1, 0); }

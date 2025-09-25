@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <functional>
 
 #include <math/vec3.h>
 #include <math/vec4.h>
@@ -53,7 +54,7 @@ public:
     static constexpr uint32_t GizmoGreen = 0xff00ff00;
     static constexpr uint32_t GizmoBlue = 0xffff0000;
 
-    static constexpr double GizmoVisualAngleFOVFraction = 0.1;
+    static constexpr double GizmoVisualAngleFOVFraction = 0.075;
 
     // hit-testing threshold, measured in visual angle.
     // ie the visual angle between the eye-ray and the ray to the gizmo nearest/hit point is
@@ -62,6 +63,64 @@ public:
     static constexpr double HitTestVisualAngleThreshDeg = 0.5;
 };
 
+
+struct GizmoHitResult {
+    int hit_identifier = (int) EGizmoElement::None;
+    double hit_distance = std::numeric_limits<double>::max();
+    double hit_ray_param = std::numeric_limits<double>::max();
+};
+
+
+// predecls for GizmoBindings definions
+class BaseGizmo;
+class GizmoElement;
+
+
+// state information used during gizmo capture/udpate
+// (not all fields are used for all gizmo types)
+struct GizmoCaptureState {
+    BaseGizmo* gizmo = nullptr;
+    GizmoElement* capturingElement = nullptr;
+
+    mat4 start_transform;
+    double3 start_origin;
+    quat start_orientation;
+    line3 world_line;
+    double start_param = 0;
+
+    void initialize(BaseGizmo* gizmoIn, GizmoElement* elementIn) {
+        gizmo = gizmoIn;
+        capturingElement = elementIn;
+    }
+
+    bool is_valid() const { return gizmo != nullptr && capturingElement != nullptr; }
+
+    void reset() { 
+        gizmo = nullptr;
+        capturingElement = nullptr; 
+    }
+};
+
+
+
+struct GizmoBindings
+{
+    std::function<void(double3 initialParams, GizmoCaptureState& captureState)>
+        onBeginChange;
+
+    std::function<void(double3 paramDeltas, GizmoCaptureState& captureState)> 
+        onParameterUpdate;
+
+    std::function<void(GizmoCaptureState& captureState)>
+        onEndChange;
+
+    GizmoBindings() 
+    {
+        onBeginChange = [](double3, GizmoCaptureState&) {};
+        onParameterUpdate = [](double3, GizmoCaptureState&) {};
+        onEndChange = [](GizmoCaptureState&) {};
+    }
+};
 
 // GizmoElement is a part of a gizmo, line an axis-widget or circle-widget in a TRS gizmo.
 // Not all fields will be used for all gizmo types
@@ -75,6 +134,10 @@ public:
     bool bIsWorldSpace = false;
 
     uint32_t color = GizmoConstants::GizmoWhite;
+
+    // bindings for behavior of this element
+    GizmoBindings bindings;
+
 
     inline static GizmoElement MakeLineElement(int identifierIn, double3 axisIn, double2 extentsIn,
             uint32_t colorIn)
@@ -99,6 +162,7 @@ public:
         e.color = colorIn;
         return e;
     }
+
 };
 
 
@@ -119,6 +183,14 @@ public:
 
 public:
 
+    GizmoElement* findElement(int elementID) {
+        for (GizmoElement& elem : Elements) {
+            if ( elem.identifier == elementID )
+                return &elem;
+        }
+        return nullptr;
+    }
+
     inline mat4 get_view_transform() const
     { 
         mat3 rotation(orientation);
@@ -136,32 +208,6 @@ public:
 
 
 
-//////////////////////
-// Gizmo Construction
-//////////////////////
-
-
-inline BaseGizmo create_standard_TRS_gizmo() 
-{
-    BaseGizmo TRSGizmo;
-
-    GizmoElement TranslateX = GizmoElement::MakeLineElement((int) EGizmoElement::TranslateX,
-            double3(1, 0, 0), double2(0, 1), GizmoConstants::GizmoRed);
-    GizmoElement TranslateY = GizmoElement::MakeLineElement((int) EGizmoElement::TranslateY,
-            double3(0, 1, 0), double2(0, 1), GizmoConstants::GizmoGreen);
-    GizmoElement TranslateZ = GizmoElement::MakeLineElement((int) EGizmoElement::TranslateZ,
-            double3(0, 0, 1), double2(0, 1), GizmoConstants::GizmoBlue);
-
-    GizmoElement RotateY = GizmoElement::MakeCircleElement((int) EGizmoElement::RotateAroundY,
-            double3(0, 1, 0), 2.5, GizmoConstants::GizmoGreen);
-
-    TRSGizmo.Elements.push_back(TranslateX);
-    TRSGizmo.Elements.push_back(TranslateY);
-    TRSGizmo.Elements.push_back(TranslateZ);
-    TRSGizmo.Elements.push_back(RotateY);
-
-    return TRSGizmo;
-}
 
 
 
@@ -282,26 +328,6 @@ inline void destroy_gizmo(BaseGizmo& gizmo, GizmoRenderState& renderState,
 //////////////////////
 
 
-// state information used during gizmo capture/udpate
-// (not all fields are used for all gizmo types)
-struct GizmoCaptureState 
-{
-    int capture_element = EGizmoElement::None;
-    mat4 start_transform;
-    double3 start_origin;
-    quat start_orientation;
-    line3 world_line;
-    double start_param = 0;
-};
-
-
-
-struct GizmoHitResult
-{
-    int hit_identifier = (int)EGizmoElement::None;
-    double hit_distance = std::numeric_limits<double>::max();
-    double hit_ray_param = std::numeric_limits<double>::max();
-};
 
 
 inline GizmoHitResult gizmo_hit_test(BaseGizmo& gizmo, const ray3& hit_ray) 
@@ -390,6 +416,220 @@ inline GizmoHitResult gizmo_hit_test(BaseGizmo& gizmo, const ray3& hit_ray)
         return GizmoHitResult();
     }
 }
+
+
+
+inline void begin_element_capture(const ray3& hit_ray, double hit_ray_param,
+        GizmoCaptureState& captureState) 
+{
+    if (captureState.is_valid() == false) return;
+    GizmoElement& element = *captureState.capturingElement;
+    BaseGizmo& gizmo = *captureState.gizmo;
+
+    mat4 transform = gizmo.get_frame_transform();
+    double4 world_origin = transform * double4(0, 0, 0, 1);
+
+    double3 start_params = double3(0, 0, 0);
+    if (element.type == EGizmoElementType::LineSegment) 
+    {
+        double4 local_axis(element.axis, 0.0);
+        double4 world_axis = normalize(transform * local_axis);
+        captureState.world_line = line3(world_origin.xyz, world_axis.xyz);
+        captureState.start_param = captureState.world_line.project(hit_ray.point_at(hit_ray_param));
+        start_params = double3(captureState.start_param, 0, 0);
+    } 
+    else if (element.type == EGizmoElementType::Circle)
+    {
+        double4 local_axis(element.axis, 0.0);
+        double4 world_axis = normalize(transform * local_axis);
+        frame3 worldFrame(world_origin.xyz, world_axis.xyz);
+        captureState.world_line = line3(world_origin.xyz, world_axis.xyz);
+        captureState.start_param = ray_circle_angleRad(hit_ray, worldFrame);
+        start_params = double3(captureState.start_param, 0, 0);
+    }
+
+    captureState.start_transform = transform;
+    captureState.start_origin = gizmo.origin;
+    captureState.start_orientation = gizmo.orientation;
+
+    element.bindings.onBeginChange(start_params, captureState);
+}
+
+inline void update_element_capture(
+    const ray3& update_ray, 
+    GizmoCaptureState& captureState) 
+{
+    if (captureState.is_valid() == false) return;
+    GizmoElement& element = *captureState.capturingElement;
+    BaseGizmo& gizmo = *captureState.gizmo;
+
+    double3 params_delta = double3(0, 0, 0);
+    if (element.type == EGizmoElementType::LineSegment) {
+        double ray_param_t, line_param_t;
+        double distsqr =
+                ray_line_distance_sqr(update_ray, captureState.world_line, ray_param_t, line_param_t);
+        double delta_param = line_param_t - captureState.start_param;
+        params_delta = double3(delta_param, 0, 0);
+    } 
+    else if (element.type == EGizmoElementType::Circle) 
+    {
+        frame3 worldFrame(captureState.world_line.origin, 
+                quat::fromDirectedRotation(double3(0, 0, 1), captureState.world_line.direction));
+        double newAngleRad = ray_circle_angleRad(update_ray, worldFrame);
+        double delta_angle = newAngleRad - captureState.start_param;
+        params_delta = double3(delta_angle, 0, 0);
+    }
+
+    element.bindings.onParameterUpdate(params_delta, captureState);
+}
+
+
+inline void end_element_capture(GizmoCaptureState& captureState) 
+{
+    if (captureState.is_valid() == false) return;
+    GizmoElement& element = *captureState.capturingElement;
+    element.bindings.onEndChange(captureState);
+}
+
+
+// standard TRS gizmo parameter update functions, to use for binding
+
+static void axis_translation_update(double3 paramDeltas, GizmoCaptureState& captureState) 
+{
+    double3 translation = paramDeltas.x * captureState.world_line.direction;
+    captureState.gizmo->origin = captureState.start_origin + translation;
+}
+static void axis_rotation_update(double3 paramDeltas, GizmoCaptureState& captureState) 
+{
+    quat delta_rotation = quat::fromAxisAngle(captureState.world_line.direction, paramDeltas.x);
+    captureState.gizmo->orientation = delta_rotation * captureState.start_orientation;
+}
+
+
+
+
+
+
+//////////////////////
+// Gizmo Construction
+//////////////////////
+
+
+inline BaseGizmo create_standard_TRS_gizmo() 
+{
+    BaseGizmo TRSGizmo;
+
+    GizmoBindings translationBindings;
+    translationBindings.onParameterUpdate = &axis_translation_update;
+
+    GizmoElement TranslateX = GizmoElement::MakeLineElement((int) EGizmoElement::TranslateX,
+            double3(1, 0, 0), double2(0, 1), GizmoConstants::GizmoRed);
+    TranslateX.bindings = translationBindings;
+
+    GizmoElement TranslateY = GizmoElement::MakeLineElement((int) EGizmoElement::TranslateY,
+            double3(0, 1, 0), double2(0, 1), GizmoConstants::GizmoGreen);
+    TranslateY.bindings = translationBindings;
+
+    GizmoElement TranslateZ = GizmoElement::MakeLineElement((int) EGizmoElement::TranslateZ,
+            double3(0, 0, 1), double2(0, 1), GizmoConstants::GizmoBlue);
+    TranslateZ.bindings = translationBindings;
+
+    GizmoBindings rotationBindings;
+    rotationBindings.onParameterUpdate = &axis_rotation_update;
+
+    GizmoElement RotateY = GizmoElement::MakeCircleElement((int) EGizmoElement::RotateAroundY,
+            double3(0, 1, 0), 2.5, GizmoConstants::GizmoGreen);
+    RotateY.bindings = rotationBindings;
+
+    TRSGizmo.Elements.push_back(TranslateX);
+    TRSGizmo.Elements.push_back(TranslateY);
+    TRSGizmo.Elements.push_back(TranslateZ);
+    TRSGizmo.Elements.push_back(RotateY);
+
+    return TRSGizmo;
+}
+
+
+
+
+
+
+
+//////////////////////
+// camera-related
+//////////////////////
+
+struct GizmoCameraInfo {
+    double3 position;
+    double3 left;
+    double3 forward;
+    double3 up;
+
+    double horzFOV;
+    double vertFOV;
+
+    double viewWidth;
+    double viewHeight;
+};
+
+inline GizmoCameraInfo extract_camera_info(View* view) 
+{
+    const filament::Camera& camera = view->getCamera();
+
+    GizmoCameraInfo camInfo;
+    camInfo.position = camera.getPosition();
+    camInfo.left = camera.getLeftVector();
+    camInfo.forward = camera.getForwardVector();
+    camInfo.up = camera.getUpVector();
+    camInfo.horzFOV = camera.getFieldOfViewInDegrees(Camera::Fov::HORIZONTAL);
+    camInfo.vertFOV = camera.getFieldOfViewInDegrees(Camera::Fov::VERTICAL);
+
+    camInfo.viewWidth = view->getViewport().width;
+    camInfo.viewHeight = view->getViewport().height;
+
+    return camInfo;
+}
+
+inline double calc_view_scaling_factor(const double3& worldOrigin, const GizmoCameraInfo& camInfo)
+{
+    double target_view_angle = camInfo.vertFOV * GizmoConstants::GizmoVisualAngleFOVFraction;
+    double3 origin_to_eye = normalize(worldOrigin - camInfo.position);
+    double3 left_to_eye = normalize((worldOrigin + camInfo.left) - camInfo.position);
+    double angle = std::acos(dot(origin_to_eye, left_to_eye)) * math::d::RAD_TO_DEG;
+    // perhaps should average left/right up/down angles to stabilize
+    // also this is nonlinear so it won't stay completely same size...
+    double scale_t = target_view_angle / angle;
+
+    // maintain constancy as window is resized (720 is arbitrary here)
+    double viewportScale = 720 / camInfo.viewHeight;
+
+    return scale_t * viewportScale;
+}
+
+
+inline ray3 construct_eye_ray(const double2& mousePosition, const GizmoCameraInfo& camInfo)
+{
+    // this mess is to construct an eye ray for hit-testing at the cursor position, w/ filament camera.
+    // can be simplified significantly    
+    double3 centerPos = camInfo.position + (1.0 * camInfo.forward);
+    // left/right are backwards??
+    double3 rightPos = centerPos + std::tan(camInfo.horzFOV * 0.5 * math::d::DEG_TO_RAD) * camInfo.left;
+    double3 leftPos = centerPos - std::tan(camInfo.horzFOV * 0.5 * math::d::DEG_TO_RAD) * camInfo.left;
+    double3 dlr = segment3(leftPos, rightPos).point_interp(mousePosition.x / camInfo.viewWidth);
+    double3 deltax = dlr - centerPos;
+    double3 upPos = centerPos + std::tan(camInfo.vertFOV * 0.5 * math::d::DEG_TO_RAD) * camInfo.up;
+    double3 downPos = centerPos - std::tan(camInfo.vertFOV * 0.5 * math::d::DEG_TO_RAD) * camInfo.up;
+    double3 dud = segment3(downPos, upPos).point_interp((1.0 - mousePosition.y / camInfo.viewHeight));
+    double3 deltay = dud - centerPos;
+    double3 combinedPos = centerPos + deltax + deltay;
+    double3 ray2_dir = normalize(combinedPos - camInfo.position);
+    double3 ray2_origin = camInfo.position;
+    ray3 hit_ray = ray3(ray2_origin, ray2_dir);
+    return hit_ray;
+}
+
+
+
 
 
 
