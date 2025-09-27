@@ -75,6 +75,7 @@ struct App {
     Texture* metallic;
     Texture* ao;
    
+    Scene* scene;
 };
 
 
@@ -207,8 +208,7 @@ static int last_gizmo_hit_element = EGizmoElement::None;
 
 
 // per-frame gizmo processing  (largely should be factored into gizmo.h or utilities)
-void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, double now) 
-{
+void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, double now) {
     TransformManager& tcm = engine->getTransformManager();
     BaseGizmo& gizmo = gizmoSystem.gizmo;
     const GizmoCaptureState& captureStaste = gizmoSystem.activeCapture;
@@ -223,16 +223,23 @@ void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, 
     // 3D ray at current mouse cursor position
     ray3 cursor_ray = construct_eye_ray(MousePosition, camInfo);
 
+    bool bRebuildGizmo = false;
+    int cur_hovered_id = gizmo.hoveredIdentifier;
+    gizmo.hoveredIdentifier = 0;
+
     // gizmo-capture state machine
     if (gizmo_capture_state == EGizmoCaptureState::Capturing)
     {
-        if (captureStaste.is_valid())
+        if (captureStaste.is_valid()) {
             update_capture(gizmoSystem, engine, cursor_ray);
+            bRebuildGizmo = true;
+        }
     } 
     else if (gizmo_capture_state == EGizmoCaptureState::EndCapturePending)
     {
         end_capture(gizmoSystem);
         gizmo_capture_state = EGizmoCaptureState::NotCapturing;
+        bRebuildGizmo = true;
     } 
     else 
     {
@@ -246,10 +253,21 @@ void tick_gizmo(GizmoSystem& gizmoSystem, App& app, Engine* engine, View* view, 
                 gizmo_capture_state = EGizmoCaptureState::NotCapturing;
                 last_gizmo_hit_element = EGizmoElement::None;
             }
+            bRebuildGizmo = true;
         } 
         else {
             last_gizmo_hit_element = hitResult.hit_identifier;
+            gizmo.hoveredIdentifier = last_gizmo_hit_element;
         }
+    }
+    if (gizmo.hoveredIdentifier != cur_hovered_id) {
+        bRebuildGizmo = true;
+    }
+
+    if (bRebuildGizmo) {
+        app.scene->remove(gizmoSystem.renderState.renderable);
+        update_gizmo_render_state(gizmo, gizmoSystem.renderState, *engine);
+        app.scene->addEntity(gizmoSystem.renderState.renderable);
     }
 
     // update the gizmo and bound mesh every frame (only actually needed if capturing)
@@ -326,6 +344,7 @@ int main(int argc, char** argv) {
         auto& tcm = engine->getTransformManager();
         auto& rcm = engine->getRenderableManager();
         auto& em = utils::EntityManager::get();
+        app.scene = scene;
 
         Ktx2Reader reader(*engine);
 

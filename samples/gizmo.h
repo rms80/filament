@@ -49,12 +49,15 @@ public:
     static constexpr uint32_t GizmoGreen = 0xff00ff00;
     static constexpr uint32_t GizmoBlue = 0xffff0000;
 
+    static constexpr uint32_t GizmoHoverColor = 0xff00ffff;
+
     static constexpr double GizmoVisualAngleFOVFraction = 0.075;
 
     // hit-testing threshold, measured in visual angle.
     // ie the visual angle between the eye-ray and the ray to the gizmo nearest/hit point is
     // measured and must be less than this value. Using visual angle instead of pixel-distance has
-    // some benefits (ie works in VR, DPI independent, etc) and some trade-offs (FOV dependent)
+    // some benefits (ie works in VR, DPI independent, etc) and some trade-offs (FOV and resolution-dependent)
+    // TODO figure out a way to make this resolution-independent...or switch to pixel-threshold
     static constexpr double HitTestVisualAngleThreshDeg = 0.5;
 };
 
@@ -165,6 +168,8 @@ public:
 class BaseGizmo {
 public:
     std::vector<GizmoElement> Elements;
+
+    int hoveredIdentifier = 0;
 
     // 3D frame, ie location and rotation
     // GizmoElement fields are generally in local space, interpreted relative to this frame

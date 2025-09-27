@@ -40,22 +40,29 @@ struct GizmoRenderState {
 
 
 
-
-inline void build_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderState,
+inline void rebuild_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderState,
         filament::Engine& engine) 
 {
-    for (const GizmoElement& Element: gizmo.Elements) {
+    // destroy existing resources
+    if (renderState.renderable.isNull() == false) {
+        engine.destroy(renderState.renderable);
+        renderState.vertex_data.clear();
+        renderState.index_data.clear();
+    }
+
+    for (const GizmoElement& Element : gizmo.Elements) {
+        bool bIsHovered = (Element.identifier == gizmo.hoveredIdentifier);
+        uint32_t elementColor = (bIsHovered) ? GizmoConstants::GizmoHoverColor : Element.color;
+
         if (Element.type == EGizmoElementType::LineSegment) {
             int n = (int) renderState.vertex_data.size();
-            GizmoRenderVertex start = { Element.params.x * Element.axis, Element.color };
+            GizmoRenderVertex start = { Element.params.x * Element.axis, elementColor };
             renderState.vertex_data.push_back(start);
-            GizmoRenderVertex end = { Element.params.y * Element.axis, Element.color };
+            GizmoRenderVertex end = { Element.params.y * Element.axis, elementColor };
             renderState.vertex_data.push_back(end);
             renderState.index_data.push_back(n);
-            renderState.index_data.push_back(n + 1);      
-        }
-        else if (Element.type == EGizmoElementType::Circle)
-        {
+            renderState.index_data.push_back(n + 1);
+        } else if (Element.type == EGizmoElementType::Circle) {
             const int steps = 32;
             double3 tanx, tany;
             make_perp_vectors(Element.axis, tanx, tany);
@@ -64,7 +71,7 @@ inline void build_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderS
             for (int i = 0; i < steps; ++i) {
                 double theta = ((double) i / (double) steps) * (2.0 * math::F_PI);
                 double x = radius * std::cos(theta), y = radius * std::sin(theta);
-                GizmoRenderVertex circle_pt{ x * tanx + y * tany, Element.color };
+                GizmoRenderVertex circle_pt{ x * tanx + y * tany, elementColor };
                 renderState.vertex_data.push_back(circle_pt);
                 renderState.index_data.push_back(start_idx + i);
                 renderState.index_data.push_back(start_idx + ((i + 1) % steps));
@@ -91,31 +98,48 @@ inline void build_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderS
                     renderState.vertex_data.size() * sizeof(GizmoRenderVertex)));
 
     renderState.index_buffer = filament::IndexBuffer::Builder()
-                        .indexCount(renderState.index_data.size())
-                        .bufferType(IndexBuffer::IndexType::UINT)
-                        .build(engine);
+                                       .indexCount(renderState.index_data.size())
+                                       .bufferType(IndexBuffer::IndexType::UINT)
+                                       .build(engine);
 
     renderState.index_buffer->setBuffer(engine,
             IndexBuffer::BufferDescriptor(renderState.index_data.data(),
                     renderState.index_data.size() * sizeof(uint32_t)));
 
-    renderState.material = Material::Builder()
-                    //.package(RESOURCES_SANDBOXUNLIT_DATA, RESOURCES_SANDBOXUNLIT_SIZE)
-                    .package(RESOURCES_BAKEDCOLOR_DATA, RESOURCES_BAKEDCOLOR_SIZE)
-                    .build(engine);
-    renderState.material->getDefaultInstance()->setDepthCulling(false);
-
     renderState.renderable = utils::EntityManager::get().create();
     filament::RenderableManager::Builder(1)
             .boundingBox(renderState.bounds)
             .geometry(0, filament::RenderableManager::PrimitiveType::LINES,
-                    renderState.vertex_buffer,
-                    renderState.index_buffer, 0, renderState.index_data.size())
+                    renderState.vertex_buffer, renderState.index_buffer, 0,
+                    renderState.index_data.size())
             .material(0, renderState.material->getDefaultInstance())
             .priority(6)
             .culling(false)
             .build(engine, renderState.renderable);
 }
+
+
+
+inline void build_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderState,
+        filament::Engine& engine) {
+
+    renderState.material =
+            Material::Builder()
+                    //.package(RESOURCES_SANDBOXUNLIT_DATA, RESOURCES_SANDBOXUNLIT_SIZE)
+                    .package(RESOURCES_BAKEDCOLOR_DATA, RESOURCES_BAKEDCOLOR_SIZE)
+                    .build(engine);
+    renderState.material->getDefaultInstance()->setDepthCulling(false);
+
+    rebuild_gizmo_render_state(gizmo, renderState, engine);
+}
+
+
+inline void update_gizmo_render_state(BaseGizmo& gizmo, GizmoRenderState& renderState,
+        filament::Engine& engine) 
+{
+    rebuild_gizmo_render_state(gizmo, renderState, engine);
+}
+
 
 
 inline void destroy_gizmo(BaseGizmo& gizmo, GizmoRenderState& renderState,
