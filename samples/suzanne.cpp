@@ -56,6 +56,7 @@
 // gizmo system
 #include "gizmo_math.h"
 #include "gizmo.h"
+#include "gizmo_render.h"
 
 
 using namespace filament;
