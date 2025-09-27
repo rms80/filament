@@ -155,6 +155,29 @@ static Texture* loadNormalMap(Engine* engine, const uint8_t* normals, size_t nby
 
 
 
+/////////////////////
+// GIZMO SYSTEM
+/////////////////////
+
+
+void initialize_gizmo(GizmoSystem& gizmoSystem, Engine* engine, Scene* scene, double3 initialOrigin)
+{
+    auto& tcm = engine->getTransformManager();
+
+    // create TRS gizmo and position it where the mesh is centered, at (0,0,-4)  (could get from
+    // app.transfrom...)
+    gizmoSystem.gizmo = create_standard_TRS_gizmo();
+    build_gizmo_render_state(gizmoSystem.gizmo, gizmoSystem.renderState, *engine);
+    TransformManager::Instance gizmoTransformHandle =
+            tcm.getInstance(gizmoSystem.renderState.renderable);
+    gizmoSystem.gizmo.view_scale = 3;
+    gizmoSystem.gizmo.origin = initialOrigin;
+    scene->addEntity(gizmoSystem.renderState.renderable);
+    tcm.setTransform(gizmoTransformHandle, gizmoSystem.gizmo.get_view_transform());
+}
+
+
+
 // this app-state information is extracted from ImGUi in imgui_callback() and used below
 static filament::math::double2 ViewportSize;
 static filament::math::double2 MousePosition;
@@ -328,6 +351,10 @@ void imgui_callback(filament::Engine* engine, filament::View* view)
 }
 
 
+/////////////////////
+// END GIZMO SYSTEM
+/////////////////////
+
 
 
 int main(int argc, char** argv) {
@@ -399,16 +426,9 @@ int main(int argc, char** argv) {
         scene->addEntity(app.mesh.renderable);
         tcm.setTransform(ti, app.transform);
 
-        // create TRS gizmo and position it where the mesh is centered, at (0,0,-4)  (could get from app.transfrom...)
-        gizmoSystem.gizmo = create_standard_TRS_gizmo();
-        build_gizmo_render_state(gizmoSystem.gizmo, gizmoSystem.renderState, *engine);
-        TransformManager::Instance gizmoTransformHandle =
-                tcm.getInstance(gizmoSystem.renderState.renderable);
-        gizmoSystem.gizmo.view_scale = 3;
-        gizmoSystem.gizmo.origin = float3(0, 0, -4);
-        scene->addEntity(gizmoSystem.renderState.renderable);
-        tcm.setTransform(gizmoTransformHandle, gizmoSystem.gizmo.get_view_transform());
-
+        // create TRS gizmo and position it where the mesh is centered, at (0,0,-4)  (could get from
+        // app.transfrom...)
+        initialize_gizmo(gizmoSystem, engine, scene, double3(0, 0, -4));
 
         // unlit material with constant color...
         //filament::Material* lineMaterial = Material::Builder()
