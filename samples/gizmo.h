@@ -100,7 +100,8 @@ struct GizmoCaptureState {
 };
 
 
-
+// Bindings for external code, to receive notifications 
+// about changes to gizmo parameters
 struct GizmoBindings
 {
     std::function<void(double3 initialParams, GizmoCaptureState& captureState)>
@@ -169,6 +170,7 @@ class BaseGizmo {
 public:
     std::vector<GizmoElement> Elements;
 
+    // ID of currently-hovered element, or 0 if no hover
     int hoveredIdentifier = 0;
 
     // 3D frame, ie location and rotation
@@ -220,7 +222,7 @@ public:
 
 
 
-
+// test for ray-intersection with the elements of the gizmo
 inline GizmoHitResult gizmo_hit_test(BaseGizmo& gizmo, const ray3& hit_ray) 
 {
     mat4 transform = gizmo.get_frame_transform();
@@ -309,7 +311,9 @@ inline GizmoHitResult gizmo_hit_test(BaseGizmo& gizmo, const ray3& hit_ray)
 }
 
 
-
+// called on mouse-down, after successful response from gizmo_hit_test(),
+// to begin a gizmo interaction. The GizmoCaptureState will be initialized
+// and should be passed into update_element_capture() / end_element_caputre()
 inline void begin_element_capture(const ray3& hit_ray, double hit_ray_param,
         GizmoCaptureState& captureState) 
 {
@@ -346,6 +350,8 @@ inline void begin_element_capture(const ray3& hit_ray, double hit_ray_param,
     element.bindings.onBeginChange(start_params, captureState);
 }
 
+
+// called every frame on mouse-move while a gizmo interaction/capture is active
 inline void update_element_capture(
     const ray3& update_ray, 
     GizmoCaptureState& captureState) 
@@ -374,7 +380,7 @@ inline void update_element_capture(
     element.bindings.onParameterUpdate(params_delta, captureState);
 }
 
-
+// call this on mouse-up when a gizmo interaction terminates
 inline void end_element_capture(GizmoCaptureState& captureState) 
 {
     if (captureState.is_valid() == false) return;
@@ -383,7 +389,7 @@ inline void end_element_capture(GizmoCaptureState& captureState)
 }
 
 
-// standard TRS gizmo parameter update functions, to use for binding
+// standard TRS gizmo parameter update functions, to use with GizmoBindings
 
 static void axis_translation_update(double3 paramDeltas, GizmoCaptureState& captureState) 
 {
@@ -450,6 +456,7 @@ inline BaseGizmo create_standard_TRS_gizmo()
 // camera-related
 //////////////////////
 
+// currently only supports perspective camera
 struct GizmoCameraInfo {
     double3 position;
     double3 left;
@@ -463,6 +470,7 @@ struct GizmoCameraInfo {
     double viewHeight;
 };
 
+// decompose a Filament View into camera parameters
 inline GizmoCameraInfo extract_camera_info(View* view) 
 {
     const filament::Camera& camera = view->getCamera();
@@ -481,6 +489,10 @@ inline GizmoCameraInfo extract_camera_info(View* view)
     return camInfo;
 }
 
+// figure out a scaling factor for the gizmo, relative to a constant 
+// fractional-visual-angle and viewport-scale. This scaling factor
+// is intended to be used with the gizmo.view_scale, to maintain
+// a (relatively) constant viewport size for the gizmo
 inline double calc_view_scaling_factor(const double3& worldOrigin, const GizmoCameraInfo& camInfo)
 {
     double target_view_angle = camInfo.vertFOV * GizmoConstants::GizmoVisualAngleFOVFraction;
@@ -497,7 +509,7 @@ inline double calc_view_scaling_factor(const double3& worldOrigin, const GizmoCa
     return scale_t * viewportScale;
 }
 
-
+// construct a ray from the eye through the view plane at a 2D cursor position (in pixel coords)
 inline ray3 construct_eye_ray(const double2& mousePosition, const GizmoCameraInfo& camInfo)
 {
     // this mess is to construct an eye ray for hit-testing at the cursor position, w/ filament camera.
